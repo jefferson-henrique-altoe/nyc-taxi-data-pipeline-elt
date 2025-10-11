@@ -2,7 +2,7 @@
 
 Este repositório contém uma solução completa de Engenharia de Dados para ingestão, processamento e análise dos dados de viagens de táxi de Nova York, conforme proposto no desafio técnico.
 
-A solução é construída usando uma stack **Serverless e Cloud-Native (AWS)** e um motor de processamento moderno (**PySpark/Databricks CE**), demonstrando habilidades em IaC, ETL/ELT e Data Quality.
+A solução é construída usando uma stack **Serverless e Cloud-Native (AWS)** e um motor de processamento moderno (**AWS Glue Serverless/PySpark**), demonstrando habilidades em IaC, ETL/ELT e Data Quality.
 
 -----
 
@@ -10,10 +10,11 @@ A solução é construída usando uma stack **Serverless e Cloud-Native (AWS)** 
 
 | Etapa do Pipeline | Tecnologia/Serviço | Finalidade no Projeto |
 | :--- | :--- | :--- |
-| **Infraestrutura como Código (IaC)** | **Terraform** | Provisionamento seguro e automatizado do S3 e AWS Glue/Athena. |
+| **Orquestração** | **AWS Step Functions** | **Controlador Serverless.** Gerencia o *workflow* completo, garantindo que a Ingestão (Lambda) termine antes que o Processamento (Glue) comece. |
+| **Infraestrutura como Código (IaC)** | **Terraform** | Provisionamento seguro e automatizado do S3, Glue Job, Lambda, Step Functions, IAM Roles e Athena. |
 | **Data Lake e Armazenamento** | **Amazon S3** | Armazenamento persistente de dados brutos (`/landing`) e processados (`/consumer`) em Parquet. |
-| **Ingestão (EL)** | **Python (`requests` e `boto3`)** | Solução de software para baixar os arquivos Parquet da TLC e carregá-los no S3. |
-| **Processamento e Transformação (T)** | **PySpark** (Executado no Databricks CE ou local) | Leitura dos dados, filtragem de colunas, limpeza (Data Quality) e escrita no formato Parquet na Camada de Consumo. |
+| **Ingestão (EL)** | **AWS Lambda (Python/`requests`/`boto3`)** | **Função Serverless.** Baixa os arquivos e faz o upload direto para a Landing Zone, com caminho particionado por *timestamp* de ingestão. |
+| **Processamento e Transformação (T)** | **AWS Glue Job (PySpark)** | **Motor ETL Serverless da AWS.** Lê a última versão dos dados (pelo *timestamp*), aplica transformações e salva na Camada de Consumo. |
 | **Catálogo de Dados** | **AWS Glue Data Catalog** | Registro do *schema* da tabela de consumo para ser acessada via SQL. |
 | **Disponibilização (SQL)** | **Amazon Athena** | Permite consultas SQL diretas sobre os dados Parquet do S3. |
 | **Análise e Relatórios** | **Jupyter Notebook** (+ Pandas/Matplotlib) | Realização das análises solicitadas e visualização dos resultados. |
@@ -28,7 +29,7 @@ Desenvolver um pipeline ELT completo (Ingestão $\rightarrow$ Processamento $\ri
 
 ## 1\. ⚙️ Fase 1: Provisionamento e Ingestão de Dados (EL)
 
-Esta fase inicial cria a infraestrutura de Data Lake via Terraform e carrega os dados brutos.
+Esta fase inicial cria toda a infraestrutura de Data Lake e a função AWS Lambda para ingestão via Terraform.
 
 ### 1.1. Pré-requisitos e Setup Local
 
@@ -36,17 +37,19 @@ Certifique-se de que você possui as seguintes ferramentas instaladas e configur
 
 1.  **Python 3.x** e `pip`.
 2.  **Terraform CLI**.
-3.  **AWS CLI** configurado (via `aws configure`) com credenciais que tenham permissões de `Admin` ou as políticas específicas para S3, Glue e IAM.
+3.  **AWS CLI** configurado (via `aws configure`) com credenciais que tenham permissões de `Admin` ou as políticas específicas para S3, Glue, Lambda, Step Functions e IAM.
 
 ### Instalação de Dependências Python
 
+O setup local é mínimo, pois o processamento principal ocorre na nuvem. Apenas as bibliotecas para *Análise* são necessárias.
+
 ```bash
-pip3 install requests boto3 pyspark pandas
-```
+pip3 install pandas matplotlib
+````
 
 ### 1.2. Provisionamento da Infraestrutura com Terraform (IaC)
 
-O código Terraform (localizado na pasta `infra/`) cria o **Bucket S3** (nosso Data Lake) e o **AWS Glue Data Catalog**.
+O código Terraform (localizado na pasta `infra/`) cria todos os recursos necessários, incluindo o **AWS Step Functions** para orquestração.
 
 **NOTA SOBRE O ESTADO:** Para simplificar a execução do avaliador, o estado do Terraform (`terraform.tfstate`) será armazenado **localmente** na pasta `infra/`.
 
@@ -62,57 +65,54 @@ terraform init
 # 2. Visualiza o plano de execução (recursos a serem criados)
 terraform plan
 
-# 3. Aplica o plano, criando o S3 Bucket, Glue Database e Tabela Athena
+# 3. Aplica o plano, criando toda a infraestrutura na AWS
 terraform apply --auto-approve
-
-# Volta para a raiz do projeto e acessa a pasta src (para rodar o script Python)
-cd ../src
 ```
 
-### 1.3. Execução da Ingestão (Carga no S3)
+### 1.3. Execução da Ingestão e Orquestração (ELT)
 
-O script Python `ingest_data.py` é a nossa **solução de ingestão**. Ele automatiza a extração (E) dos arquivos Parquet de Jan a Mai/2023 (Yellow e Green Taxis) do CloudFront da TLC e o upload (L) para a **Landing Zone** do S3.
+A execução do *pipeline* completo de ELT agora é feita via o orquestrador **AWS Step Functions**, garantindo o fluxo: **Ingestão (Lambda) $\rightarrow$ Processamento (Glue Job)**.
 
-**Pré-requisito:** Certifique-se de que a variável `S3_BUCKET_NAME` no `ingest_data.py` foi atualizada com o nome do bucket que o Terraform criou.
+> **NOTA SOBRE IDEMPOTÊNCIA:** A Landing Zone agora salva os dados com um *timestamp* de ingestão (`ingest_ts`) no caminho S3. O Glue Job será configurado para **sempre processar a versão mais recente** para cada mês, garantindo que re-execuções não causem duplicação e que a camada de consumo seja baseada nos dados mais frescos.
+
+#### 1.3.1. Execução Padrão (Valores Iniciais do Desafio)
+
+O Step Function aceita um *payload* JSON que é repassado ao Lambda, permitindo o controle de quais meses/anos serão ingeridos. A invocação sem um *payload* específico usará os valores *default* (Janeiro a Maio de 2023).
 
 ```bash
-# Executa o script de Ingestão Python
-python3 ingest_data.py
+# O ARN da State Machine pode ser obtido na saída do Terraform, ex:
+STATE_MACHINE_ARN="arn:aws:states:us-east-1:123456789012:stateMachine:nyc-taxi-elt-pipeline" 
+
+# Invoca o Step Function, passando um payload vazio ({}) para usar defaults
+aws stepfunctions start-execution \
+    --state-machine-arn $STATE_MACHINE_ARN \
+    --name "Run-$(date +%Y%m%d%H%M%S)" \
+    --input '{}'
 ```
 
-#### Saída Esperada
+#### 1.3.2. Execução Customizada (Exemplo: Julho de 2024, Apenas Yellow)
 
-O script irá confirmar o upload para os 10 arquivos (5 meses x 2 tipos):
+Para ingerir dados de um período diferente, passe um objeto JSON no campo `--input`:
 
+```bash
+# Payload para customizar a execução: ano 2024, mês 07, apenas yellow
+INPUT='{"year": "2024", "months": ["07"], "trip_types": ["yellow"]}'
+
+aws stepfunctions start-execution \
+    --state-machine-arn $STATE_MACHINE_ARN \
+    --name "Run-July2024-$(date +%Y%m%d%H%M%S)" \
+    --input "$INPUT"
 ```
---- Iniciando Ingestão de Dados (2023) ---
-Bucket de Destino: [SEU_BUCKET_NAME]
-...
---- Processando 1/10 - Tipo: yellow, Mês: 01 ---
--> Iniciando download: [URL_DO_CLOUDFRONT]
-   [SUCESSO] Upload concluído para s3://[SEU_BUCKET_NAME]/landing/yellow_tripdata_2023-01.parquet
-...
---- Ingestão Concluída! ---
-```
+
+#### Saída Esperada (Verificação)
+
+Verifique o Console do **AWS Step Functions** para visualizar o gráfico de execução em tempo real. O sucesso da execução indica que todo o pipeline (Lambda e Glue Job) foi concluído.
 
 ### ⚠️ Solução de Problemas Comuns (Troubleshooting)
 
-Se, ao rodar o `terraform apply`, você encontrar o erro `AccessDenied` (Código 403) na ação `s3:CreateBucket` (ou qualquer ação IAM, como `glue:*`), isso indica que as credenciais AWS configuradas não possuem as permissões necessárias para criar os recursos.
+Se, ao rodar o `terraform apply`, você encontrar o erro `AccessDenied` (Código 403) na criação de qualquer recurso AWS, isso indica que as credenciais AWS configuradas não possuem as permissões necessárias.
 
-**Como Resolver:**
-
-O usuário IAM configurado via `aws configure` **deve ter permissões de administrador** ou, no mínimo, uma política anexada que permita as seguintes ações:
-
-* **S3:** `s3:*` (Para criar e gerenciar o bucket de dados)
-* **Glue:** `glue:*` (Para criar o Glue Database e a tabela)
-* **IAM:** (Se houver *Roles* criadas), `iam:PassRole`
-
-**Ação:**
-
-1.  Acesse o **Console da AWS** com um usuário Administrador.
-2.  Vá para o serviço **IAM** e encontre o usuário que está sendo usado no CLI.
-3.  Anexe a política gerenciada pela AWS chamada **`AdministratorAccess`** ou uma política personalizada que contenha as ações listadas acima.
-4.  Após a anexação, tente rodar o `terraform apply --auto-approve` novamente.
+**Ação:** O usuário IAM configurado via `aws configure` **deve ter permissões de administrador** ou, no mínimo, as políticas específicas para **S3, Glue, Lambda, Step Functions e IAM** anexadas. Tente rodar o `terraform apply --auto-approve` novamente após corrigir as permissões no Console AWS/IAM.
 
 -----
 
@@ -120,21 +120,25 @@ O usuário IAM configurado via `aws configure` **deve ter permissões de adminis
 
 Nesta fase, o código PySpark processa os dados da Landing Zone, aplica transformações, garante a Qualidade de Dados (DQ) e salva o resultado na **Camada de Consumo**.
 
-*(Neste ponto, você deve criar o script PySpark e o código de Data Quality.)*
+### 2.1. Lógica do PySpark (Seleção da Última Versão)
+
+O script `process_data_glue.py` deve conter a lógica para identificar e processar a versão mais recente dos dados:
+
+1.  Ler todos os dados da Landing Zone.
+2.  Usar funções do Spark SQL ou `Window Functions` para identificar o valor **máximo** do campo `ingest_ts` para cada `partition_date`.
+3.  Filtrar o *DataFrame* para reter apenas as linhas correspondentes ao último `ingest_ts`.
+4.  Aplicar transformações ETL e regras de Data Quality.
+
+### 2.2. Execução do Job AWS Glue
+
+O Job ETL será iniciado automaticamente pelo Step Functions.
+
+**Atenção ao Custo:** O Job Glue está configurado com `Worker Type: G.025X` e `Number of Workers: 2`. O custo por execução é **baixo** (pagamento por segundo), mas é um recurso pago pela AWS.
 
 **Próximos Passos:**
 
-1.  Crie o script `process_data.py` (código PySpark).
-2.  O script deve ler de `s3://[SEU_BUCKET_NAME]/landing/`.
-3.  Filtre as 5 colunas obrigatórias e aplique as regras de DQ (ex: `passenger_count > 0`).
-4.  Escreva o resultado em Parquet na Camada de Consumo: `s3://[SEU_BUCKET_NAME]/consumer/trips/`.
-
-<!-- end list -->
-
-```bash
-# Exemplo de execução (utilizando spark-submit para rodar o PySpark localmente)
-spark-submit process_data.py
-```
+1.  Finalize o script `process_data_glue.py` com a lógica de seleção da última versão.
+2.  **Rode o `terraform apply`** (se ainda não o fez) para garantir que a versão mais recente do script foi enviada para o S3.
 
 -----
 
@@ -152,7 +156,7 @@ Nesta fase, os dados são acessados via SQL (Athena) e analisados em um Notebook
 
 ## 🗑️ Limpeza de Recursos (Obrigatório)
 
-Para evitar custos indesejados na sua conta AWS, **SEM-PRE** destrua a infraestrutura após o término da avaliação.
+Para evitar custos indesejados na sua conta AWS, **SEMPRE** destrua a infraestrutura após o término da avaliação.
 
 ```bash
 cd infra/
@@ -160,17 +164,13 @@ terraform destroy --auto-approve
 ```
 
 -----
+
 ## 🧠 Metodologia e Produtividade
 
 Este projeto foi desenvolvido utilizando uma abordagem de **Engenharia Aumentada por IA (AI-Augmented Engineering)**. O modelo de linguagem **Gemini (Google)** foi utilizado como um *pair programmer* arquitetural para:
 
-1.  **Validação de Escolhas Tecnológicas:** Confirmar a escolha do Terraform sobre o CloudFormation para portabilidade de dados (Databricks CE).
-2.  **Otimização de Custos e Segurança:** Orientação na escolha da arquitetura *Serverless* (S3, Glue, Lambda) para manter o custo AWS próximo de zero (`terraform destroy`).
-3.  **Geração de Código Boilerplate:** Acelerar a criação de templates IaC (Terraform) e scripts de ingestão (Python/Boto3), permitindo que o foco principal fosse direcionado para a **Lógica PySpark e Qualidade de Dados**.
+1.  **Orquestração Serverless:** Implementar o **AWS Step Functions** como orquestrador central, elevando o pipeline a um nível profissional com monitoramento e controle de fluxo.
+2.  **Idempotência e Versionamento:** Adotar a estratégia de *timestamp* na Landing Zone para garantir a imutabilidade do dado *raw* e a leitura da última versão pelo processamento ETL.
+3.  **Otimização de Custos e Segurança:** Orientação na configuração eficiente dos recursos (Lambda, Glue Workers) e uso de IAM Roles, mantendo o custo AWS baixo e a segurança em alta.
 
 Esta metodologia visa demonstrar proficiência em ferramentas de IA para **ganho de produtividade**, mantendo total controle e entendimento das decisões arquiteturais tomadas.
-
------
-## 💡 Ferramentas de Produtividade
-
-A arquitetura e as decisões de implementação neste projeto foram validadas e aceleradas com o auxílio do **Gemini (Modelo de Linguagem do Google)**, utilizado como um acelerador de produtividade na fase de design de software e IaC. O foco em *best practices* foi mantido como prioridade.
