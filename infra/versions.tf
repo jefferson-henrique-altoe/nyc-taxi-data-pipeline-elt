@@ -1,5 +1,3 @@
-# infra/versions.tf
-
 terraform {
   # Versão mínima requerida do Terraform
   required_version = ">= 1.0.0"
