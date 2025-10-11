@@ -320,7 +320,7 @@ resource "aws_s3_object" "lambda_code_upload" {
 
 # 8.3. Cria a função AWS Lambda
 resource "aws_lambda_function" "ingestion_function" {
-  function_name    = "nyc_taxi_ingest_function"
+  function_name    = "nyc-taxi-ingest-function"
   s3_bucket        = aws_s3_object.lambda_code_upload.bucket
   s3_key           = aws_s3_object.lambda_code_upload.key
   handler          = "ingest_data.handler" # O handler deve ser definido no seu script Python
@@ -375,7 +375,7 @@ resource "aws_iam_policy" "sfn_lambda_invoke_policy" {
         Effect = "Allow"
         Action = "lambda:InvokeFunction"
         # 🚨 SUBSTITUA PELO ARN DA SUA FUNÇÃO LAMBDA
-        Resource = [aws_lambda_function.nyc_taxi_ingest_function.arn] 
+        Resource = [aws_lambda_function.nyc-taxi-ingest-function.arn] 
       }
     ]
   })
@@ -423,7 +423,7 @@ locals {
         Resource = "arn:aws:states:::lambda:invoke" 
         Parameters = {
           # Nome da função Lambda
-          "FunctionName" = aws_lambda_function.nyc_taxi_ingest_function.arn
+          "FunctionName" = aws_lambda_function.nyc-taxi-ingest-function.arn
           # 🚨 CHAVE CRUCIAL: Passa todo o INPUT do Step Function como payload do Lambda
           "Payload.$"    = "$" 
         }
