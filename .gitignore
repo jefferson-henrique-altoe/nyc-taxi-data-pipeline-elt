@@ -1,0 +1,37 @@
+# -----------------------------------------------------------------------------
+# Ignorar arquivos de dependência/gerados pelo Python
+# -----------------------------------------------------------------------------
+__pycache__/
+*.pyc
+.venv
+venv/
+.python-version
+*.log
+
+# -----------------------------------------------------------------------------
+# Ignorar arquivos/diretórios gerados pelo Terraform
+# -----------------------------------------------------------------------------
+# Diretório de plugins do provedor
+.terraform/
+
+# Arquivo de estado local (CRUCIAL IGNORAR)
+*.tfstate
+*.tfstate.backup
+
+# Arquivos de bloqueio de dependências/provedores
+*.hcl # Garante que o .terraform.lock.hcl seja ignorado
+.terraform.lock.hcl
+
+# Arquivos de plano (se forem salvos)
+*.tfplan
+
+# -----------------------------------------------------------------------------
+# Ignorar arquivos do Jupyter (Análise)
+# -----------------------------------------------------------------------------
+.ipynb_checkpoints/
+
+# -----------------------------------------------------------------------------
+# Ignorar logs e arquivos de sistema
+# -----------------------------------------------------------------------------
+.DS_Store # Mac
+*~ # Linux
