@@ -1,98 +1,74 @@
 # 🚕 Desafio Técnico: Engenharia de Dados NYC Taxi Trips
 
-Este repositório contém uma solução completa de Engenharia de Dados para ingestão, processamento e análise dos dados de viagens de táxi de Nova York, conforme proposto no desafio técnico.
+Este repositório contém uma solução completa de Engenharia de Dados **Serverless** para ingestão, processamento e **análise pré-agregada** dos dados de viagens de táxi de Nova York.
 
-A solução é construída usando uma stack **Serverless e Cloud-Native (AWS)** e um motor de processamento moderno (**AWS Glue Serverless/PySpark**), demonstrando habilidades em IaC, ETL/ELT e Data Quality.
+A arquitetura utiliza uma stack **Cloud-Native (AWS)** com orquestração centralizada no **AWS Step Functions**, garantindo um fluxo ELT robusto: **Landing** $\rightarrow$ **Consumer** $\rightarrow$ **Reporting**.
 
------
+---
 
-## 🚀 Stack Tecnológica Escolhida
+## 🚀 Stack Tecnológica e Arquitetura Final
 
 | Etapa do Pipeline | Tecnologia/Serviço | Finalidade no Projeto |
 | :--- | :--- | :--- |
-| **Orquestração** | **AWS Step Functions** | **Controlador Serverless.** Gerencia o *workflow* completo, garantindo que a Ingestão (Lambda) termine antes que o Processamento (Glue) comece. |
-| **Infraestrutura como Código (IaC)** | **Terraform** | Provisionamento seguro e automatizado do S3, Glue Job, Lambda, Step Functions, IAM Roles e Athena. |
-| **Data Lake e Armazenamento** | **Amazon S3** | Armazenamento persistente de dados brutos (`/landing`) e processados (`/consumer`) em Parquet. |
-| **Ingestão (EL)** | **AWS Lambda (Python/`requests`/`boto3`)** | **Função Serverless.** Baixa os arquivos e faz o upload direto para a Landing Zone, com caminho particionado por *timestamp* de ingestão. |
-| **Processamento e Transformação (T)** | **AWS Glue Job (PySpark)** | **Motor ETL Serverless da AWS.** Lê a última versão dos dados (pelo *timestamp*), aplica transformações e salva na Camada de Consumo. |
-| **Catálogo de Dados** | **AWS Glue Data Catalog** | Registro do *schema* da tabela de consumo para ser acessada via SQL. |
-| **Disponibilização (SQL)** | **Amazon Athena** | Permite consultas SQL diretas sobre os dados Parquet do S3. |
-| **Análise e Relatórios** | **Jupyter Notebook** (+ Pandas/Matplotlib) | Realização das análises solicitadas e visualização dos resultados. |
+| **Orquestração** | **AWS Step Functions** | **Controlador Serverless.** Garante o *workflow* sequencial de três passos: Ingestão $\rightarrow$ Processamento $\rightarrow$ Reporting. |
+| **Infraestrutura como Código (IaC)** | **Terraform** | Provisionamento seguro e automatizado de **todos** os recursos (S3, Glue Jobs, Lambda, Step Functions, IAM Roles e Tabelas do Athena). |
+| **Data Lake e Armazenamento** | **Amazon S3** | Armazenamento persistente nas camadas: `landing`, `consumer` (Delta/Parquet) e `analytics/reporting` (Parquet pré-agregado). |
+| **Ingestão (EL)** | **AWS Lambda (Python)** | Baixa os arquivos e faz o upload para a **Landing Zone**, particionado por *timestamp* de ingestão. |
+| **Processamento (T - Camada Consumer)** | **AWS Glue Job (PySpark)** | **Motor ETL Serverless.** Lê a última versão dos dados, aplica Data Quality (DQ) e salva na **Camada Consumer** (Delta Lake). |
+| **Reporting (T - Camada Reporting)** | **AWS Glue Job (PySpark)** | **Motor ETL Serverless.** Lê a Camada Consumer, executa as agregações **Q1 e Q2** e salva os relatórios na **Camada Reporting** (pronto para consumo). |
+| **Catálogo de Dados** | **AWS Glue Data Catalog** | Registro do *schema* de todas as tabelas (`trips_consumer`, `q1_monthly_revenue`, `q2_hourly_passengers`) para acesso via SQL. |
+| **Consumo e Análise Ad-Hoc** | **Amazon Athena / PyAthena** | Permite consultas SQL diretas sobre os relatórios pré-agregados, garantindo baixo custo e alta performance. |
 
------
+---
 
-## 🎯 Objetivo do Desafio
+## 🎯 Objetivo e Transformação
 
-Desenvolver um pipeline ELT completo (Ingestão $\rightarrow$ Processamento $\rightarrow$ Disponibilização $\rightarrow$ Análise) para os dados de viagens de táxi de **Janeiro a Maio de 2023** da cidade de Nova York, garantindo que as colunas obrigatórias (**VendorID**, **passenger\_count**, **total\_amount**, **tpep\_pickup\_datetime**, **tpep\_dropoff\_datetime**) estejam presentes e modeladas na camada de consumo.
+O objetivo é processar os dados de viagens de táxi de **Janeiro a Maio de 2023** e disponibilizar, na **Camada Reporting**, as seguintes análises prontas:
 
------
+1.  **Q1:** Média de valor total (`total_amount`) por mês.
+2.  **Q2:** Média de passageiros por cada hora do dia, agrupado por tipo de viagem.
 
-## 1\. ⚙️ Fase 1: Provisionamento e Ingestão de Dados (EL)
+---
 
-Esta fase inicial cria toda a infraestrutura de Data Lake e a função AWS Lambda para ingestão via Terraform.
+## 1\. ⚙️ Fase 1: Provisionamento e Execução do ELT
 
 ### 1.1. Pré-requisitos e Setup Local
 
-Certifique-se de que você possui as seguintes ferramentas instaladas e configuradas:
-
-1.  **Python 3.x** e `pip`.
+1.  **Python 3.x**, **`pip`** e **`make`**.
 2.  **Terraform CLI**.
-3.  **AWS CLI** configurado (via `aws configure`) com credenciais que tenham permissões de `Admin` ou as políticas específicas para S3, Glue, Lambda, Step Functions e IAM.
-
-### Instalação de Dependências Python
-
-O setup local é mínimo, pois o processamento principal ocorre na nuvem. Apenas as bibliotecas para *Análise* são necessárias.
-
-```bash
-pip3 install pandas matplotlib
-````
+3.  **AWS CLI** configurado (via `aws configure`) com credenciais que possuam permissões para todos os serviços necessários (S3, Glue, Lambda, Step Functions, IAM e Athena).
 
 ### 1.2. Provisionamento da Infraestrutura com Terraform (IaC)
 
-O código Terraform (localizado na pasta `infra/`) cria todos os recursos necessários, incluindo o **AWS Step Functions** para orquestração.
+Todos os recursos de S3, IAM, Glue Jobs (Processamento e Reporting) e o Step Function são provisionados via `terraform apply`, orquestrado pelo `Makefile`.
 
-**NOTA SOBRE O ESTADO:** Para simplificar a execução do avaliador, o estado do Terraform (`terraform.tfstate`) será armazenado **localmente** na pasta `infra/`.
+| Comando | Ação Executada |
+| :--- | :--- |
+| **`make deploy`** | Prepara o pacote Lambda, faz upload dos scripts Glue e executa `terraform apply --auto-approve`. |
+| **`make destroy`** | **Destrói toda a infraestrutura da AWS (CUIDADO: Apaga dados).** |
 
-**ATENÇÃO:** Edite o arquivo `main.tf` e substitua as *placeholders* pelo nome único do seu bucket S3 antes de prosseguir.
+### 1.3. Execução da Orquestração (Pipeline ELT Completo)
 
-```bash
-# Navega para a pasta do Terraform
-cd infra/
-
-# 1. Inicializa o ambiente Terraform (o estado local será criado)
-terraform init
-
-# 2. Visualiza o plano de execução (recursos a serem criados)
-terraform plan
-
-# 3. Aplica o plano, criando toda a infraestrutura na AWS
-terraform apply --auto-approve
-```
-
-### 1.3. Execução da Ingestão e Orquestração (ELT)
-
-A execução do *pipeline* completo de ELT agora é feita via o orquestrador **AWS Step Functions**, garantindo o fluxo: **Ingestão (Lambda) $\rightarrow$ Processamento (Glue Job)**.
-
-> **NOTA SOBRE IDEMPOTÊNCIA:** A Landing Zone agora salva os dados com um *timestamp* de ingestão (`ingest_ts`) no caminho S3. O Glue Job será configurado para **sempre processar a versão mais recente** para cada mês, garantindo que re-execuções não causem duplicação e que a camada de consumo seja baseada nos dados mais frescos.
+O Step Function gerencia o fluxo de três estágios. O ARN da State Machine pode ser obtido na saída do Terraform: `nyc-taxi-elt-pipeline`.
 
 #### 1.3.1. Execução Padrão (Valores Iniciais do Desafio)
 
-O Step Function aceita um *payload* JSON que é repassado ao Lambda, permitindo o controle de quais meses/anos serão ingeridos. A invocação sem um *payload* específico usará os valores *default* (Janeiro a Maio de 2023).
+A invocação sem um *payload* específico usará os valores *default* (Janeiro a Maio de 2023).
 
 ```bash
-# O ARN da State Machine pode ser obtido na saída do Terraform, ex:
-STATE_MACHINE_ARN="arn:aws:states:us-east-1:123456789012:stateMachine:nyc-taxi-elt-pipeline" 
+# Substitua pelo seu ARN da State Machine
+STATE_MACHINE_ARN="ARN_DA_SUA_STATE_MACHINE" 
 
-# Invoca o Step Function, passando um payload vazio ({}) para usar defaults
+# Invoca o Step Function. Payload vazio ({}) usa os valores default
 aws stepfunctions start-execution \
     --state-machine-arn $STATE_MACHINE_ARN \
     --name "Run-$(date +%Y%m%d%H%M%S)" \
     --input '{}'
-```
+````
 
 #### 1.3.2. Execução Customizada (Exemplo: Julho de 2024, Apenas Yellow)
 
-Para ingerir dados de um período diferente, passe um objeto JSON no campo `--input`:
+Para ingerir dados de um período ou tipo de viagem diferente, passe um objeto JSON no campo `--input`:
 
 ```bash
 # Payload para customizar a execução: ano 2024, mês 07, apenas yellow
@@ -104,64 +80,69 @@ aws stepfunctions start-execution \
     --input "$INPUT"
 ```
 
-#### Saída Esperada (Verificação)
-
-Verifique o Console do **AWS Step Functions** para visualizar o gráfico de execução em tempo real. O sucesso da execução indica que todo o pipeline (Lambda e Glue Job) foi concluído.
-
-### ⚠️ Solução de Problemas Comuns (Troubleshooting)
-
-Se, ao rodar o `terraform apply`, você encontrar o erro `AccessDenied` (Código 403) na criação de qualquer recurso AWS, isso indica que as credenciais AWS configuradas não possuem as permissões necessárias.
-
-**Ação:** O usuário IAM configurado via `aws configure` **deve ter permissões de administrador** ou, no mínimo, as políticas específicas para **S3, Glue, Lambda, Step Functions e IAM** anexadas. Tente rodar o `terraform apply --auto-approve` novamente após corrigir as permissões no Console AWS/IAM.
+**Verificação:** Acompanhe o gráfico de execução no Console do AWS Step Functions para garantir que o fluxo de **três tarefas** (`Lambda` $\rightarrow$ `Glue Processing` $\rightarrow$ `Glue Reporting`) seja concluído com sucesso.
 
 -----
 
-## 2\. 🧩 Fase 2: Processamento e Data Quality (T)
+## 2\. 🧩 Fase 2: Reporting e Disponibilização (Q1 e Q2)
 
-Nesta fase, o código PySpark processa os dados da Landing Zone, aplica transformações, garante a Qualidade de Dados (DQ) e salva o resultado na **Camada de Consumo**.
+Após a conclusão do Job de Reporting, os relatórios agregados estão disponíveis na **Camada Reporting** do S3 e catalogados pelo Glue Data Catalog.
 
-### 2.1. Lógica do PySpark (Seleção da Última Versão)
+### Tabelas do Glue Catalog para Consulta Final
 
-O script `process_data_glue.py` deve conter a lógica para identificar e processar a versão mais recente dos dados:
-
-1.  Ler todos os dados da Landing Zone.
-2.  Usar funções do Spark SQL ou `Window Functions` para identificar o valor **máximo** do campo `ingest_ts` para cada `partition_date`.
-3.  Filtrar o *DataFrame* para reter apenas as linhas correspondentes ao último `ingest_ts`.
-4.  Aplicar transformações ETL e regras de Data Quality.
-
-### 2.2. Execução do Job AWS Glue
-
-O Job ETL será iniciado automaticamente pelo Step Functions.
-
-**Atenção ao Custo:** O Job Glue está configurado com `Worker Type: G.025X` e `Number of Workers: 2`. O custo por execução é **baixo** (pagamento por segundo), mas é um recurso pago pela AWS.
-
-**Próximos Passos:**
-
-1.  Finalize o script `process_data_glue.py` com a lógica de seleção da última versão.
-2.  **Rode o `terraform apply`** (se ainda não o fez) para garantir que a versão mais recente do script foi enviada para o S3.
+| Tabela | Análise | Caminho no S3 |
+| :--- | :--- | :--- |
+| `q1_monthly_revenue` | Média Mensal de Receita | `s3://<SEU_BUCKET>/analytics/reporting/q1_monthly_revenue/` |
+| `q2_hourly_passengers` | Média Horária de Passageiros | `s3://<SEU_BUCKET>/analytics/reporting/q2_hourly_passengers/` |
 
 -----
 
-## 3\. 🔍 Fase 3: Análise e Consumo de Dados
+## 3\. 🔍 Fase 3: Análise e Consumo Final de Dados
 
-Nesta fase, os dados são acessados via SQL (Athena) e analisados em um Notebook.
+O consumo dos relatórios pré-agregados pode ser feito de duas maneiras, ambas acessando as tabelas catalogadas via Amazon Athena.
 
-1.  **Verificação no Athena:** No Console da AWS, use o **Amazon Athena** para consultar a tabela `trips_consumer` criada pelo Terraform.
-    ```sql
-    SELECT count(*) FROM "nyc_taxi_db"."trips_consumer";
-    ```
-2.  **Análise no Notebook:** Abra o Jupyter e execute o Notebook (`analysis.ipynb`) que se conecta ao Athena (via PyAthena ou similar) ou lê o Parquet final do S3 para gerar as visualizações e *insights* solicitados.
+### 3.1. Acesso Direto via Amazon Athena (SQL)
 
------
+Este é o método mais rápido para validação manual no console AWS:
 
-## 🗑️ Limpeza de Recursos (Obrigatório)
+1.  Acesse o Console do **Amazon Athena** e selecione o banco de dados `nyc_taxi_db`.
+2.  Execute a consulta na tabela de relatório, por exemplo:
 
-Para evitar custos indesejados na sua conta AWS, **SEMPRE** destrua a infraestrutura após o término da avaliação.
+<!-- end list -->
+
+```sql
+SELECT 
+    report_month, 
+    ROUND(avg_total_amount, 2) AS avg_revenue
+FROM 
+    "nyc_taxi_db"."q1_monthly_revenue"
+ORDER BY 
+    report_month;
+```
+
+### 3.2. Acesso Programático Local (Script PyAthena)
+
+Para integrar a análise em um ambiente Python local (como o script `analytics_job.py`):
+
+#### A. Instalação de Dependências Locais
+
+É necessário instalar as bibliotecas que farão a comunicação com o Athena e processarão o resultado em um DataFrame.
 
 ```bash
-cd infra/
-terraform destroy --auto-approve
+# Instala o driver do Athena e o Pandas
+pip install pyathena[pandas]
 ```
+
+#### B. Execução do Script
+
+Certifique-se de que o **`analytics_job.py`** esteja configurado com o nome do seu bucket S3 e que suas credenciais AWS estejam ativas na máquina.
+
+```bash
+# O script irá consultar o Athena e imprimir os resultados
+python analysis/analytics_job.py
+```
+
+O sucesso dessas consultas confirma que todo o pipeline ELT está operacional e que os relatórios de negócio estão prontos para o consumo.
 
 -----
 

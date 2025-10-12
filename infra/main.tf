@@ -3,8 +3,14 @@
 variable "data_lake_bucket_name" {
   description = "Nome único do bucket S3 que será o Data Lake."
   # ESCOLHER NOME ÚNICO AQUI!
-  default     = "nyc-taxi-data-lake-jha-case-ifood" 
+  default       = "nyc-taxi-data-lake-jha-case-ifood"
 }
+
+# --- Data Sources (Para obter dados da conta e região atuais) ---
+# CORREÇÃO: Adicionando as Data Sources ausentes referenciadas em seções 10 e 11.
+data "aws_region" "current" {}
+
+data "aws_caller_identity" "current" {}
 
 # --- 2. S3 Data Lake ---
 
@@ -35,21 +41,17 @@ resource "aws_s3_bucket_public_access_block" "data_lake_public_access" {
 
 # Cria o banco de dados lógico que o Athena usará
 resource "aws_glue_catalog_database" "taxi_db" {
-  name = "nyc_taxi_db"
+  name        = "nyc_taxi_db"
   description = "Database para os dados de taxi de NY."
 }
 
 # Define a Tabela da Camada de Consumo (acessada pelo Athena)
-# Define a Tabela da Camada de Consumo (acessada pelo Athena)
 # O PySpark/Databricks deverá escrever os dados neste local e formato.
 resource "aws_glue_catalog_table" "trips_consumer_table" {
-  name          = "trips_consumer"
-  database_name = aws_glue_catalog_database.taxi_db.name
-  
-  table_type    = "EXTERNAL_TABLE"
-  
-  # REMOVIDO: O LOCATION NÃO VAI MAIS AQUI!
-  # location      = "s3://${aws_s3_bucket.data_lake_bucket.id}/consumer/trips/" # ESTAVA ERRADO
+  name            = "trips_consumer"
+  database_name   = aws_glue_catalog_database.taxi_db.name
+
+  table_type      = "EXTERNAL_TABLE"
 
   # Parâmetros de formato
   parameters = {
@@ -58,11 +60,11 @@ resource "aws_glue_catalog_table" "trips_consumer_table" {
   }
 
   storage_descriptor {
-    location      = "s3://${aws_s3_bucket.data_lake_bucket.id}/consumer/trips/"
+    location      = "s3://${aws_s3_bucket.data_lake_bucket.id}/consumer/trips_delta/"
 
     input_format  = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
     output_format = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
-    
+
     ser_de_info {
       serialization_library = "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
     }
@@ -118,13 +120,13 @@ resource "aws_iam_role" "glue_service_role" {
 
 # 4.2. Define a Policy de Permissões (o que a Role pode fazer)
 resource "aws_iam_policy" "glue_execution_policy" {
-  name        = "Glue-Execution-Policy-for-NYCTaxi"
-  description = "Permissões para ler S3, escrever S3 e acessar o Glue Catalog."
+  name          = "Glue-Execution-Policy-for-NYCTaxi"
+  description   = "Permissões para ler S3, escrever S3 e acessar o Glue Catalog."
 
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
-      # Permissão para o Glue usar o S3 (ler e escrever no bucket do projeto)
+      # Permissão para o Glue usar o S3 (ler e escrever no bucket do projeto, incluindo a nova área de 'analytics')
       {
         Action = [
           "s3:GetObject",
@@ -177,48 +179,54 @@ resource "aws_iam_policy" "glue_execution_policy" {
 
 # 4.3. Anexa a Policy à Role
 resource "aws_iam_role_policy_attachment" "glue_policy_attach" {
-  role       = aws_iam_role.glue_service_role.name
-  policy_arn = aws_iam_policy.glue_execution_policy.arn
+  role        = aws_iam_role.glue_service_role.name
+  policy_arn  = aws_iam_policy.glue_execution_policy.arn
 }
 
 # 4.4. Anexa uma Managed Policy da AWS (Permissões básicas de Glue)
 # É uma boa prática complementar com a política gerenciada.
 resource "aws_iam_role_policy_attachment" "glue_managed_attach" {
-  role       = aws_iam_role.glue_service_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+  role        = aws_iam_role.glue_service_role.name
+  policy_arn  = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
 }
 
 # --- 5. Upload do Script Glue para o S3 (Automatizado pelo Terraform) ---
 
+# Upload do Script ETL (process_data_glue.py)
 resource "aws_s3_object" "glue_script_upload" {
   bucket = aws_s3_bucket.data_lake_bucket.id
   # Define o caminho do script dentro do bucket
   key    = "src/process_data_glue.py"
-  
+
   # Define o caminho do script local (Assumindo que o script está na pasta 'src/')
   source = "../src/process_data_glue.py"
-  
+
   # Garante que o objeto S3 seja atualizado se o arquivo local mudar
   # Usa o hash do arquivo para detectar alterações
   etag = filemd5("../src/process_data_glue.py")
-  
+
   # Define o tipo de conteúdo (bom para metadados)
   content_type = "text/x-python"
 }
 
-# --- 6. AWS Glue ETL Job ---
+# Upload do Script de Análise (reporting_etl_job.py)
+resource "aws_s3_object" "analytics_script_upload" {
+  bucket = aws_s3_bucket.data_lake_bucket.id
+  key    = "src/reporting_etl_job.py"
+  source = "../src/reporting_etl_job.py"
+  etag   = filemd5("../src/reporting_etl_job.py")
+  content_type = "text/x-python"
+}
+
+# --- 6. AWS Glue ETL Job (Processamento) ---
 
 resource "aws_glue_job" "data_processing_job" {
-  name                 = "nyc_taxi_processing_job"
-  role_arn             = aws_iam_role.glue_service_role.arn
-  default_arguments = {
-    "--datalake-formats" = "delta"
-    "--conf"             = "spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog"
-    # Garanta que o Glue use uma versão compatível (ex: Glue 4.0/Spark 3.3+)
-  }
-  glue_version         = "4.0" # Versão moderna do Glue que suporta Spark 3.3
-  worker_type          = "G.025X" # Tipo de máquina (G.1X é um bom ponto de partida)
-  number_of_workers    = 2      # Número de workers para processamento distribuído
+  # CORREÇÃO: O nome interno do recurso é 'data_processing_job'
+  name             = "nyc_taxi_processing_job" 
+  role_arn         = aws_iam_role.glue_service_role.arn
+  glue_version     = "4.0" # Versão moderna do Glue que suporta Spark 3.3
+  worker_type      = "G.1X" # Tipo de máquina (G.1X é um bom ponto de partida)
+  number_of_workers = 2      # Número de workers para processamento distribuído
 
   # Certifica-se de que o upload do script termine antes de configurar o Job
   depends_on = [aws_s3_object.glue_script_upload]
@@ -234,6 +242,9 @@ resource "aws_glue_job" "data_processing_job" {
     "--job-language" = "python"
     "--TempDir"      = "s3://${aws_s3_bucket.data_lake_bucket.id}/temp/" # Necessário para o Glue
     "--enable-job-insights" = "true" # Boa prática
+    "--datalake-formats" = "delta"
+    "--conf"             = "spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog"
+    # Garanta que o Glue use uma versão compatível (ex: Glue 4.0/Spark 3.3+)
   }
 
   # Configuração de Logs
@@ -244,6 +255,37 @@ resource "aws_glue_job" "data_processing_job" {
     Project = "DataChallenge"
   }
 }
+
+# --- 6. AWS Glue Analytics Job (Novo) ---
+resource "aws_glue_job" "data_reporting_etl_job" {
+  name             = "nyc_taxi_reporting_etl_job"
+  role_arn         = aws_iam_role.glue_service_role.arn
+  glue_version     = "4.0"
+  worker_type      = "G.1X" 
+  number_of_workers = 2
+
+  depends_on = [aws_s3_object.analytics_script_upload]
+
+  default_arguments = {
+    "--job-language" = "python"
+    "--TempDir"      = "s3://${aws_s3_bucket.data_lake_bucket.id}/temp/"
+    "--datalake-formats" = "delta"
+    "--conf"             = "spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog"
+    # Note: O nome do bucket é hardcoded no script PySpark, mas é boa prática passá-lo aqui também
+    "--datalake-bucket" = var.data_lake_bucket_name 
+  }
+
+  command {
+    script_location = "s3://${aws_s3_bucket.data_lake_bucket.id}/src/reporting_etl_job.py"
+    python_version  = "3"
+  }
+  
+  tags = {
+    Project = "DataChallenge"
+    Purpose = "Analytics"
+  }
+}
+
 
 # --- 7. IAM Role para o AWS Lambda (Ingestão) ---
 
@@ -297,8 +339,8 @@ resource "aws_iam_policy" "ingestion_s3_policy" {
 
 # Anexar Policies à Role
 resource "aws_iam_role_policy_attachment" "lambda_s3_attach" {
-  role       = aws_iam_role.ingestion_lambda_role.name
-  policy_arn = aws_iam_policy.ingestion_s3_policy.arn
+  role        = aws_iam_role.ingestion_lambda_role.name
+  policy_arn  = aws_iam_policy.ingestion_s3_policy.arn
 }
 
 # --- 8. AWS Lambda: Upload e Função ---
@@ -306,8 +348,11 @@ resource "aws_iam_role_policy_attachment" "lambda_s3_attach" {
 # 8.1. Cria um arquivo ZIP do código Python para o Lambda
 data "archive_file" "ingestion_zip" {
   type        = "zip"
-  source_file = "../src/ingest_data.py" # Assumindo que o script Python está em src/
-  output_path = "tmp/ingestion_code.zip"
+  # O caminho do ZIP que será criado temporariamente
+  output_path = "tmp/ingestion_code.zip" 
+
+  # CORREÇÃO DEFINITIVA: Apenas o argumento source_dir é mantido.
+  source_dir  = "../lambda_deployment_package" 
 }
 
 # 8.2. Faz o upload do ZIP para o S3
@@ -355,7 +400,8 @@ resource "aws_iam_role" "sfn_execution_role" {
       {
         Effect = "Allow"
         Principal = {
-          Service = "states.${data.aws_region.current.name}.amazonaws.com"
+          # Usando data.aws_region para o nome do serviço
+          Service = "states.${data.aws_region.current.name}.amazonaws.com" 
         }
         Action = "sts:AssumeRole"
       }
@@ -374,17 +420,16 @@ resource "aws_iam_policy" "sfn_lambda_invoke_policy" {
       {
         Effect = "Allow"
         Action = "lambda:InvokeFunction"
-        # 🚨 SUBSTITUA PELO ARN DA SUA FUNÇÃO LAMBDA
-        Resource = [aws_lambda_function.nyc-taxi-ingest-function.arn] 
+        Resource = [aws_lambda_function.ingestion_function.arn] # Usando o ARN da função
       }
     ]
   })
 }
 
-# 11. Política para permitir o Início do Glue Job
+# 11. Política para permitir o Início dos Glue Jobs
 resource "aws_iam_policy" "sfn_glue_start_job_policy" {
   name_prefix = "nyc-taxi-sfn-glue-policy-"
-  description = "Permite que o Step Functions inicie o Glue Job."
+  description = "Permite que o Step Functions inicie os Glue Jobs (Processamento e Análise)."
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -392,8 +437,11 @@ resource "aws_iam_policy" "sfn_glue_start_job_policy" {
       {
         Effect = "Allow"
         Action = "glue:StartJobRun"
-        # 🚨 SUBSTITUA PELO ARN DO SEU GLUE JOB (Nome)
-        Resource = ["arn:aws:glue:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:job/${aws_glue_job.nyc_taxi_processing_job.name}"] 
+        # CORREÇÃO: Usando a referência correta do Job de Processamento (data_processing_job)
+        Resource = [
+          "arn:aws:glue:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:job/${aws_glue_job.data_processing_job.name}",
+          "arn:aws:glue:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:job/${aws_glue_job.data_reporting_etl_job.name}" # Novo Job
+        ]
       }
     ]
   })
@@ -401,49 +449,58 @@ resource "aws_iam_policy" "sfn_glue_start_job_policy" {
 
 # 12. Anexa as políticas à Role de execução
 resource "aws_iam_role_policy_attachment" "sfn_lambda_attach" {
-  role       = aws_iam_role.sfn_execution_role.name
-  policy_arn = aws_iam_policy.sfn_lambda_invoke_policy.arn
+  role        = aws_iam_role.sfn_execution_role.name
+  policy_arn  = aws_iam_policy.sfn_lambda_invoke_policy.arn
 }
 
 resource "aws_iam_role_policy_attachment" "sfn_glue_attach" {
-  role       = aws_iam_role.sfn_execution_role.name
-  policy_arn = aws_iam_policy.sfn_glue_start_job_policy.arn
+  role        = aws_iam_role.sfn_execution_role.name
+  policy_arn  = aws_iam_policy.sfn_glue_start_job_policy.arn
 }
 
 # 13. Definição da State Machine (Workflow ASL)
 locals {
   # Definindo o workflow (ASL) como um template JSON
   sfn_definition = jsonencode({
-    Comment = "Pipeline ETL Serverless NYC Taxi (Lambda -> Glue Job)"
+    Comment = "Pipeline ELT Serverless NYC Taxi (Lambda -> Glue Job -> Analytics)"
     StartAt = "InvokeIngestionLambda"
     States = {
       InvokeIngestionLambda = {
         Type = "Task"
         # Padrão AWS SFN: Invoca Lambda de forma síncrona
-        Resource = "arn:aws:states:::lambda:invoke" 
+        Resource = "arn:aws:states:::lambda:invoke"
         Parameters = {
           # Nome da função Lambda
-          "FunctionName" = aws_lambda_function.nyc-taxi-ingest-function.arn
-          # 🚨 CHAVE CRUCIAL: Passa todo o INPUT do Step Function como payload do Lambda
-          "Payload.$"    = "$" 
+          "FunctionName" = aws_lambda_function.ingestion_function.arn
+          # CHAVE CRUCIAL: Passa todo o INPUT do Step Function como payload do Lambda
+          "Payload.$"    = "$"
         }
         Retry = [ # Exemplo de tratamento de erro: Tenta 2 vezes em caso de falha
           {
             ErrorEquals = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
-            IntervalSeconds = 2
-            MaxAttempts     = 2
-            BackoffRate     = 2
+            IntervalSeconds = 1
+            MaxAttempts     = 0
+            BackoffRate     = 1
           }
         ]
         Next = "StartDataProcessingJob"
-      }
+      },
       StartDataProcessingJob = {
         Type = "Task"
-        # Padrão AWS SFN: Inicia o Glue Job e espera ele terminar
-        Resource = "arn:aws:states:::glue:startJobRun.sync" 
+        # Padrão AWS SFN: Inicia o Glue Job de Processamento e espera ele terminar
+        Resource = "arn:aws:states:::glue:startJobRun.sync"
         Parameters = {
-          "JobName" = aws_glue_job.nyc_taxi_processing_job.name
-          # Aqui poderiam ser passados argumentos adicionais para o Glue Job, se necessário
+          # CORREÇÃO: Usando a referência correta do Glue Job de Processamento
+          "JobName" = aws_glue_job.data_processing_job.name 
+        }
+        Next = "RunAnalyticsQueries" # NOVO: Vai para a Análise
+      },
+      RunAnalyticsQueries = { # NOVO ESTADO: Inicia o Glue Job de Análise
+        Type = "Task"
+        # Padrão AWS SFN: Inicia o Glue Job de Análise e espera ele terminar
+        Resource = "arn:aws:states:::glue:startJobRun.sync"
+        Parameters = {
+          "JobName" = aws_glue_job.data_reporting_etl_job.name # Usa o novo job de análise
         }
         End = true
       }
@@ -453,13 +510,16 @@ locals {
 
 # 14. Criação do recurso State Machine
 resource "aws_sfn_state_machine" "nyc_taxi_elt_pipeline" {
-  name       = "nyc-taxi-elt-pipeline"
-  role_arn   = aws_iam_role.sfn_execution_role.arn
-  definition = local.sfn_definition
-  
+  name        = "nyc-taxi-elt-pipeline"
+  role_arn    = aws_iam_role.sfn_execution_role.arn
+  definition  = local.sfn_definition
+
   # Certifica-se de que a State Machine só seja criada após as permissões estarem prontas
   depends_on = [
     aws_iam_role_policy_attachment.sfn_lambda_attach,
     aws_iam_role_policy_attachment.sfn_glue_attach,
+    # Adicionando dependência nos jobs para garantir que o ARN exista
+    aws_glue_job.data_processing_job, 
+    aws_glue_job.data_reporting_etl_job
   ]
 }
