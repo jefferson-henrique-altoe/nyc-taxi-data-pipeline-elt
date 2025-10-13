@@ -537,7 +537,7 @@ locals {
           "--trip_type_filter": "green"
         }
       },
-      "ResultPath": "$.greenJobOutput",  <!-- Linha adicionada para preservar o estado de entrada -->
+      "ResultPath": "$.greenJobOutput",
       "Catch": [
         {
           "ErrorEquals": [

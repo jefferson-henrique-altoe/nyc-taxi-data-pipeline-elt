@@ -88,48 +88,27 @@ aws stepfunctions start-execution \
     --input '{}'
 ````
 
-# #### 1.3.2. Execução Customizada (Exemplo: Julho de 2024, Apenas Yellow)
+#### 1.3.2. Execução Customizada (Exemplo: Julho de 2024, Apenas Yellow)
 
-# Passe um objeto JSON para customizar o período de ingestão:
-
-# ```bash
-# # Payload para customizar a execução: ano 2024, mês 07, apenas yellow
-# INPUT='{"year": "2024", "months": ["07"], "trip_types": ["yellow"]}'
-
-# aws stepfunctions start-execution \
-#     --state-machine-arn $STATE_MACHINE_ARN \
-#     --name "Run-July2024-$(date +%Y%m%d%H%M%S)" \
-#     --input "$INPUT"
-# ```
-
-# **Verificação de Falhas:** O Step Function está configurado para **falhar imediatamente** se qualquer um dos Glue Jobs (`Processing` ou `Reporting`) ou a Lambda retornar um erro, garantindo que a execução não fique travada.
-
-#### 1.3.2. Execução Customizada (Customizando o Período e Tipos de Viagem)
-
-O Step Function aceita um objeto JSON como input para **customizar a janela de tempo** e os **tipos de táxi** a serem processados. Se o input for `{}`, o pipeline usa os valores padrão definidos abaixo:
-
-| Parâmetro | Tipo | Descrição | Valores Padrão (se input for `{}`) |
-| :--- | :--- | :--- | :--- |
-| **`year`** | `String` | O ano de referência dos dados (e.g., `"2023"`, `"2024"`). | `"2023"` |
-| **`months`** | `Array<String>` | Lista de meses a serem processados, no formato de dois dígitos (e.g., `["01", "02", "03"]`). | `["01", "02", "03", "04", "05"]` |
-| **`trip_types`** | `Array<String>` | Lista de tipos de táxi a serem incluídos. Tipos válidos: `yellow`, `green`, `fhv`. | `["yellow", "green", "fhv"]` |
-
-**Exemplo de Execução Customizada (Julho de 2024, Apenas Yellow e Green):**
-
-Passe o objeto JSON abaixo no argumento `--input`:
+Passe um objeto JSON para customizar o período de ingestão:
 
 ```bash
-# Payload para customizar a execução: ano 2024, mês 07, apenas yellow e green
-INPUT='{
-    "year": "2024", 
-    "months": ["07"], 
-    "trip_types": ["yellow", "green"]
-}'
+# Payload para customizar a execução: ano 2024, mês 07, apenas yellow
+INPUT='{"year": "2024", "months": ["07"], "trip_types": ["yellow"]}'
 
 aws stepfunctions start-execution \
     --state-machine-arn $STATE_MACHINE_ARN \
-    --name "Run-July2024-YellowGreen-$(date +%Y%m%d%H%M%S)" \
+    --name "Run-July2024-$(date +%Y%m%d%H%M%S)" \
     --input "$INPUT"
+```
+
+**Verificação de Falhas:** O Step Function está configurado para **falhar imediatamente** se qualquer um dos Glue Jobs (`Processing` ou `Reporting`) ou a Lambda retornar um erro, garantindo que a execução não fique travada.
+
+### ⚠️ Solução de Problemas Comuns (Troubleshooting)
+
+Se, ao rodar o `make deploy`, você encontrar o erro `AccessDenied` (Código 403) na criação de qualquer recurso AWS, isso indica que as credenciais AWS configuradas não possuem as permissões necessárias.
+
+**Ação:** O usuário IAM configurado via `aws configure` **deve ter permissões de administrador** ou, no mínimo, as políticas específicas para **S3, Glue, Lambda, Step Functions e IAM** anexadas. Tente rodar o `make deploy` novamente após corrigir as permissões no Console AWS/IAM.
 
 -----
 
