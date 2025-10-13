@@ -2,6 +2,12 @@ import os
 import requests
 import boto3
 from datetime import datetime
+from urllib.parse import urlparse
+import sys
+try:
+    from awsglue.utils import getResolvedOptions
+except ImportError:
+    pass
 
 # --- Configurações Fixas (Não dependem do ambiente) ---
 # Base da URL de distribuição via AWS CloudFront
@@ -11,18 +17,22 @@ BASE_CDN_URL = "https://d37ci6vzurychx.cloudfront.net/trip-data/"
 def generate_url_and_key(trip_type, year, month):
     """Gera a URL completa de download e a chave S3 de destino."""
 
-    # Formato de partição YYYYMM (ex: 202301)
-    partition_date = f"{year}{month.zfill(2)}"
+    # CRÍTICO: Garante que o mês tenha sempre 2 dígitos (ex: "01", "05")
+    month_padded = month.zfill(2) 
 
-    # Exemplo: yellow_tripdata_2023-01.parquet
-    file_name = f"{trip_type}_tripdata_{year}-{month}.parquet"
+    # Formato de partição YYYYMM (ex: 202301)
+    partition_date = f"{year}{month_padded}"
+
+    # Exemplo: yellow_tripdata_2023-01.parquet. Agora usa month_padded para consistência.
+    file_name = f"{trip_type}_tripdata_{year}-{month_padded}.parquet"
 
     # URL completa para download
     download_url = f"{BASE_CDN_URL}{file_name}"
 
     # Chave S3 (Landing Zone/Original Data)
     # Ex: /landing/trip_type=yellow/partition_date=202301/yellow_tripdata_2023-01.parquet
-    s3_key = f"landing/trip_type={trip_type}/partition_date={partition_date}/{trip_type}_tripdata_{year}-{month.zfill(2)}.parquet"
+    # Usa month_padded na parte final para corresponder ao filename
+    s3_key = f"landing/trip_type={trip_type}/partition_date={partition_date}/{trip_type}_tripdata_{year}-{month_padded}.parquet"
 
     return download_url, s3_key
 
@@ -38,8 +48,6 @@ def download_and_upload(s3_client, url, bucket, key):
         response.raise_for_status()
 
         # 2. Upload para o S3 usando o objeto de stream
-        # Este método não permite adicionar a coluna 'ingest_ts' dentro do Parquet,
-        # portanto, teremos que adicionar este metadado no Glue Job.
         s3_client.upload_fileobj(
             Fileobj=response.raw,
             Bucket=bucket,
@@ -70,14 +78,15 @@ def handler(event, context):
         return {'statusCode': 500, 'body': 'Configuration Error'}
         
     # 🚨 NOVO: Gera um timestamp único para esta execução. 
-    # Mantemos o timestamp, mas ele não vai mais para o caminho S3
     INGEST_TIMESTAMP = datetime.now().strftime('%Y%m%d%H%M%S')
     print(f"Timestamp da Ingestão: {INGEST_TIMESTAMP}")
     
 
     # 2. Definir VARIÁVEIS DE EXECUÇÃO (com defaults)
     YEAR = str(event.get("year", "2023")) 
-    MONTHS = event.get("months", ["01", "02", "03", "04", "05"])
+    # Garante que os meses de input também tenham zero-padding
+    input_months = event.get("months", ["01", "02", "03", "04", "05"])
+    MONTHS = [str(m).zfill(2) for m in input_months] 
     TRIP_TYPES = event.get("trip_types", ["yellow", "green"])
     
     # 3. Inicialização e Execução
@@ -93,7 +102,7 @@ def handler(event, context):
         for month in MONTHS:
             processed_count += 1
             
-            # 🚨 ALTERADO: Removemos o INGEST_TIMESTAMP da chamada
+            # A chamada à função generate_url_and_key já garante o zero-padding
             url, s3_key = generate_url_and_key(trip_type, YEAR, month)
             
             if download_and_upload(s3_client, url, S3_BUCKET_NAME, s3_key):

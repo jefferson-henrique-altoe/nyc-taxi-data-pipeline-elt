@@ -220,13 +220,14 @@ resource "aws_s3_object" "analytics_script_upload" {
 
 # --- 6. AWS Glue ETL Job (Processamento) ---
 
+# Job 1: Processamento de Dados (Yellow/Green)
 resource "aws_glue_job" "data_processing_job" {
   # CORREÇÃO: O nome interno do recurso é 'data_processing_job'
-  name             = "nyc_taxi_processing_job" 
-  role_arn         = aws_iam_role.glue_service_role.arn
-  glue_version     = "4.0" # Versão moderna do Glue que suporta Spark 3.3
-  worker_type      = "G.1X" # Tipo de máquina (G.1X é um bom ponto de partida)
-  number_of_workers = 2      # Número de workers para processamento distribuído
+  name              = "nyc_taxi_processing_job" 
+  role_arn          = aws_iam_role.glue_service_role.arn
+  glue_version      = "4.0" # Versão moderna do Glue que suporta Spark 3.3
+  worker_type       = "G.1X" # Tipo de máquina (G.1X é um bom ponto de partida)
+  number_of_workers = 2     # Número de workers para processamento distribuído
 
   # Certifica-se de que o upload do script termine antes de configurar o Job
   depends_on = [aws_s3_object.glue_script_upload]
@@ -251,17 +252,21 @@ resource "aws_glue_job" "data_processing_job" {
   execution_class = "STANDARD" # Ou FLEX para economia em jobs agendados
   max_retries     = 0
 
+  execution_property {
+    max_concurrent_runs = 2 # Defina aqui o número de execuções concorrentes desejadas
+  }
+
   tags = {
     Project = "DataChallenge"
   }
 }
 
-# --- 6. AWS Glue Analytics Job (Novo) ---
+# Job 2: Relatório/Análise (re-adicionado para corrigir o erro)
 resource "aws_glue_job" "data_reporting_etl_job" {
-  name             = "nyc_taxi_reporting_etl_job"
-  role_arn         = aws_iam_role.glue_service_role.arn
-  glue_version     = "4.0"
-  worker_type      = "G.1X" 
+  name              = "nyc_taxi_reporting_etl_job"
+  role_arn          = aws_iam_role.glue_service_role.arn
+  glue_version      = "4.0"
+  worker_type       = "G.1X" 
   number_of_workers = 2
 
   depends_on = [aws_s3_object.analytics_script_upload]
@@ -271,7 +276,6 @@ resource "aws_glue_job" "data_reporting_etl_job" {
     "--TempDir"      = "s3://${aws_s3_bucket.data_lake_bucket.id}/temp/"
     "--datalake-formats" = "delta"
     "--conf"             = "spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog"
-    # Note: O nome do bucket é hardcoded no script PySpark, mas é boa prática passá-lo aqui também
     "--datalake-bucket" = var.data_lake_bucket_name 
   }
 
@@ -285,7 +289,6 @@ resource "aws_glue_job" "data_reporting_etl_job" {
     Purpose = "Analytics"
   }
 }
-
 
 # --- 7. IAM Role para o AWS Lambda (Ingestão) ---
 
@@ -462,49 +465,110 @@ resource "aws_iam_role_policy_attachment" "sfn_glue_attach" {
 locals {
   # Definindo o workflow (ASL) como um template JSON
   sfn_definition = jsonencode({
-    Comment = "Pipeline ELT Serverless NYC Taxi (Lambda -> Glue Job -> Analytics)"
-    StartAt = "InvokeIngestionLambda"
-    States = {
-      InvokeIngestionLambda = {
-        Type = "Task"
-        # Padrão AWS SFN: Invoca Lambda de forma síncrona
-        Resource = "arn:aws:states:::lambda:invoke"
-        Parameters = {
-          # Nome da função Lambda
-          "FunctionName" = aws_lambda_function.ingestion_function.arn
-          # CHAVE CRUCIAL: Passa todo o INPUT do Step Function como payload do Lambda
-          "Payload.$"    = "$"
+  "Comment": "Pipeline ELT Serverless NYC Taxi (Lambda -> Glue Job -> Analytics)",
+  "StartAt": "InvokeIngestionLambda",
+  "States": {
+    "FailState": {
+      "Cause": "Um job Glue falhou durante o processamento ou reporting.",
+      "Error": "GlueJobExecutionFailed",
+      "Type": "Fail"
+    },
+    "InvokeIngestionLambda": {
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.TaskFailed",
+            "States.All"
+          ],
+          "Next": "FailState"
         }
-        Retry = [ # Exemplo de tratamento de erro: Tenta 2 vezes em caso de falha
-          {
-            ErrorEquals = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
-            IntervalSeconds = 1
-            MaxAttempts     = 0
-            BackoffRate     = 1
-          }
-        ]
-        Next = "StartDataProcessingJob"
+      ],
+      "Next": "ProcessYellow",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:us-east-2:093399695454:function:nyc-taxi-ingest-function",
+        "Payload.$": "$"
       },
-      StartDataProcessingJob = {
-        Type = "Task"
-        # Padrão AWS SFN: Inicia o Glue Job de Processamento e espera ele terminar
-        Resource = "arn:aws:states:::glue:startJobRun.sync"
-        Parameters = {
-          # CORREÇÃO: Usando a referência correta do Glue Job de Processamento
-          "JobName" = aws_glue_job.data_processing_job.name 
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Retry": [
+        {
+          "BackoffRate": 1,
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 0
         }
-        Next = "RunAnalyticsQueries" # NOVO: Vai para a Análise
+      ],
+      "Type": "Task",
+      "ResultPath": "$.lambdaResult"
+    },
+    "ProcessYellow": {
+      "Type": "Task",
+      "Next": "ProcessGreen",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "nyc_taxi_processing_job",
+        "Arguments": {
+          "--datalake_bucket.$": "$.datalakeBucket",
+          "--trip_type_filter": "yellow"
+        }
       },
-      RunAnalyticsQueries = { # NOVO ESTADO: Inicia o Glue Job de Análise
-        Type = "Task"
-        # Padrão AWS SFN: Inicia o Glue Job de Análise e espera ele terminar
-        Resource = "arn:aws:states:::glue:startJobRun.sync"
-        Parameters = {
-          "JobName" = aws_glue_job.data_reporting_etl_job.name # Usa o novo job de análise
+      "ResultPath": "$.yellowJobOutput",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.TaskFailed",
+            "States.All"
+          ],
+          "Next": "FailState"
         }
-        End = true
-      }
+      ]
+    },
+    "ProcessGreen": {
+      "Type": "Task",
+      "Next": "RunAnalyticsQueries",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "nyc_taxi_processing_job",
+        "Arguments": {
+          "--datalake_bucket.$": "$.datalakeBucket",
+          "--trip_type_filter": "green"
+        }
+      },
+      "ResultPath": "$.greenJobOutput",  <!-- Linha adicionada para preservar o estado de entrada -->
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.TaskFailed",
+            "States.All"
+          ],
+          "Next": "FailState"
+        }
+      ]
+    },
+    "RunAnalyticsQueries": {
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.TaskFailed",
+            "States.All"
+          ],
+          "Next": "FailState"
+        }
+      ],
+      "End": true,
+      "Parameters": {
+        "JobName": "nyc_taxi_reporting_etl_job",
+        "Arguments": {
+          "--datalake_bucket.$": "$.datalakeBucket"
+        }
+      },
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Type": "Task"
     }
+  }
   })
 }
 

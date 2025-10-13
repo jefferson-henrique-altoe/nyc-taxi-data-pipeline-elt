@@ -14,10 +14,34 @@ A arquitetura utiliza uma stack **Cloud-Native (AWS)** com orquestração centra
 | **Infraestrutura como Código (IaC)** | **Terraform** | Provisionamento seguro e automatizado de **todos** os recursos (S3, Glue Jobs, Lambda, Step Functions, IAM Roles e Tabelas do Athena). |
 | **Data Lake e Armazenamento** | **Amazon S3** | Armazenamento persistente nas camadas: `landing`, `consumer` (Delta/Parquet) e `analytics/reporting` (Parquet pré-agregado). |
 | **Ingestão (EL)** | **AWS Lambda (Python)** | Baixa os arquivos e faz o upload para a **Landing Zone**, particionado por *timestamp* de ingestão. |
-| **Processamento (T - Camada Consumer)** | **AWS Glue Job (PySpark)** | **Motor ETL Serverless.** Lê a última versão dos dados, aplica Data Quality (DQ) e salva na **Camada Consumer** (Delta Lake). |
+| **Processing (T - Camada Consumer)** | **AWS Glue Job (PySpark)** | **Motor ETL Serverless.** Lê a última versão dos dados, aplica Data Quality (DQ) e salva na **Camada Consumer** (Delta Lake). |
 | **Reporting (T - Camada Reporting)** | **AWS Glue Job (PySpark)** | **Motor ETL Serverless.** Lê a Camada Consumer, executa as agregações **Q1 e Q2** e salva os relatórios na **Camada Reporting** (pronto para consumo). |
 | **Catálogo de Dados** | **AWS Glue Data Catalog** | Registro do *schema* de todas as tabelas (`trips_consumer`, `q1_monthly_revenue`, `q2_hourly_passengers`) para acesso via SQL. |
 | **Consumo e Análise Ad-Hoc** | **Amazon Athena / PyAthena** | Permite consultas SQL diretas sobre os relatórios pré-agregados, garantindo baixo custo e alta performance. |
+
+---
+
+## 💰 FinOps: Gestão de Custos Serverless
+
+A arquitetura **Serverless** (Lambda, Glue, Step Functions) oferece um excelente balanço entre performance e custo, seguindo o princípio **pay-per-use** (pague apenas pelo que usar), o que é ideal para *pipelines* de dados intermitentes como este.
+
+### Principais Drivers de Custo
+
+* **AWS Glue (DPUs):** É o componente de maior custo potencial. O preço é baseado em **DPUs (Data Processing Units) por hora**. Para mitigar isso:
+    * Usamos o Glue 3.0 (mais rápido e eficiente).
+    * Os Jobs são otimizados para tempo de execução mínimo (leitura de Delta e escritas em Parquet eficientes).
+* **Amazon S3 (Armazenamento):** O custo principal aqui é o armazenamento dos dados nas três camadas (Landing, Consumer, Reporting). O custo por GB é baixo, mas é contínuo.
+* **AWS Step Functions:** O custo é baseado no número de **transições de estado** (State Transitions), que é muito baixo, mas escalável.
+
+### O Papel do Free Tier
+
+A **Camada Gratuita da AWS** cobre integralmente ou parcialmente o uso de vários serviços (Lambda, S3, Step Functions) por um ano, tornando este projeto financeiramente viável para testes iniciais e aprendizado.
+
+### Boas Práticas FinOps
+
+Para garantir a eficiência de custos fora do Free Tier, a melhor prática FinOps neste projeto é:
+
+* **Destruição Imediata:** Após o teste e validação, utilize o comando `make destroy` para desprovisionar toda a infraestrutura e evitar cobranças recorrentes de recursos como Volumes EBS (anexados ao Glue) ou S3, mantendo apenas o código localmente.
 
 ---
 
@@ -34,53 +58,78 @@ O objetivo é processar os dados de viagens de táxi de **Janeiro a Maio de 2023
 
 ### 1.1. Pré-requisitos e Setup Local
 
-1.  **Python 3.x**, **`pip`** e **`make`**.
-2.  **Terraform CLI**.
-3.  **AWS CLI** configurado (via `aws configure`) com credenciais que possuam permissões para todos os serviços necessários (S3, Glue, Lambda, Step Functions, IAM e Athena).
+1.  **Python 3.x**, **`pip`**, **`make`** e **Terraform CLI**.
+2.  **AWS CLI** configurado (via `aws configure`) com credenciais que possuam permissões de acesso.
 
-### 1.2. Provisionamento da Infraestrutura com Terraform (IaC)
+### 1.2. Provisionamento da Infraestrutura (IaC)
 
-Todos os recursos de S3, IAM, Glue Jobs (Processamento e Reporting) e o Step Function são provisionados via `terraform apply`, orquestrado pelo `Makefile`.
+Utilize o **`Makefile`** para automatizar o *build* do pacote Lambda e a execução do Terraform. O `make deploy` é o comando principal que encapsula ambos.
 
-| Comando | Ação Executada |
-| :--- | :--- |
-| **`make deploy`** | Prepara o pacote Lambda, faz upload dos scripts Glue e executa `terraform apply --auto-approve`. |
-| **`make destroy`** | **Destrói toda a infraestrutura da AWS (CUIDADO: Apaga dados).** |
+| Comando | Ação Executada | Observações |
+| :--- | :--- | :--- |
+| **`make deploy`** | **Execução Completa.** Prepara o pacote Python da Lambda, inicializa o Terraform e executa o `terraform apply --auto-approve`. | Comando principal de *setup* e deployment. |
+| **`make destroy`** | **Destrói toda a infraestrutura da AWS (CUIDADO: Apaga dados).** | |
+| **`make clean`** | Remove artefatos locais (`lambda_deployment_package`, `.terraform`, `.tfstate`). | Útil para limpeza e garantia de um *build* limpo. |
 
 ### 1.3. Execução da Orquestração (Pipeline ELT Completo)
 
-O Step Function gerencia o fluxo de três estágios. O ARN da State Machine pode ser obtido na saída do Terraform: `nyc-taxi-elt-pipeline`.
+O Step Function gerencia o fluxo de três estágios. Obtenha o ARN da State Machine na saída do Terraform: `nyc-taxi-elt-pipeline`.
 
-#### 1.3.1. Execução Padrão (Valores Iniciais do Desafio)
-
-A invocação sem um *payload* específico usará os valores *default* (Janeiro a Maio de 2023).
+#### 1.3.1. Execução Padrão (Jan-Mai 2023)
 
 ```bash
 # Substitua pelo seu ARN da State Machine
 STATE_MACHINE_ARN="ARN_DA_SUA_STATE_MACHINE" 
 
-# Invoca o Step Function. Payload vazio ({}) usa os valores default
+# Invoca o Step Function com payload vazio ({}) para usar os valores default
 aws stepfunctions start-execution \
     --state-machine-arn $STATE_MACHINE_ARN \
     --name "Run-$(date +%Y%m%d%H%M%S)" \
     --input '{}'
 ````
 
-#### 1.3.2. Execução Customizada (Exemplo: Julho de 2024, Apenas Yellow)
+# #### 1.3.2. Execução Customizada (Exemplo: Julho de 2024, Apenas Yellow)
 
-Para ingerir dados de um período ou tipo de viagem diferente, passe um objeto JSON no campo `--input`:
+# Passe um objeto JSON para customizar o período de ingestão:
+
+# ```bash
+# # Payload para customizar a execução: ano 2024, mês 07, apenas yellow
+# INPUT='{"year": "2024", "months": ["07"], "trip_types": ["yellow"]}'
+
+# aws stepfunctions start-execution \
+#     --state-machine-arn $STATE_MACHINE_ARN \
+#     --name "Run-July2024-$(date +%Y%m%d%H%M%S)" \
+#     --input "$INPUT"
+# ```
+
+# **Verificação de Falhas:** O Step Function está configurado para **falhar imediatamente** se qualquer um dos Glue Jobs (`Processing` ou `Reporting`) ou a Lambda retornar um erro, garantindo que a execução não fique travada.
+
+#### 1.3.2. Execução Customizada (Customizando o Período e Tipos de Viagem)
+
+O Step Function aceita um objeto JSON como input para **customizar a janela de tempo** e os **tipos de táxi** a serem processados. Se o input for `{}`, o pipeline usa os valores padrão definidos abaixo:
+
+| Parâmetro | Tipo | Descrição | Valores Padrão (se input for `{}`) |
+| :--- | :--- | :--- | :--- |
+| **`year`** | `String` | O ano de referência dos dados (e.g., `"2023"`, `"2024"`). | `"2023"` |
+| **`months`** | `Array<String>` | Lista de meses a serem processados, no formato de dois dígitos (e.g., `["01", "02", "03"]`). | `["01", "02", "03", "04", "05"]` |
+| **`trip_types`** | `Array<String>` | Lista de tipos de táxi a serem incluídos. Tipos válidos: `yellow`, `green`, `fhv`. | `["yellow", "green", "fhv"]` |
+
+**Exemplo de Execução Customizada (Julho de 2024, Apenas Yellow e Green):**
+
+Passe o objeto JSON abaixo no argumento `--input`:
 
 ```bash
-# Payload para customizar a execução: ano 2024, mês 07, apenas yellow
-INPUT='{"year": "2024", "months": ["07"], "trip_types": ["yellow"]}'
+# Payload para customizar a execução: ano 2024, mês 07, apenas yellow e green
+INPUT='{
+    "year": "2024", 
+    "months": ["07"], 
+    "trip_types": ["yellow", "green"]
+}'
 
 aws stepfunctions start-execution \
     --state-machine-arn $STATE_MACHINE_ARN \
-    --name "Run-July2024-$(date +%Y%m%d%H%M%S)" \
+    --name "Run-July2024-YellowGreen-$(date +%Y%m%d%H%M%S)" \
     --input "$INPUT"
-```
-
-**Verificação:** Acompanhe o gráfico de execução no Console do AWS Step Functions para garantir que o fluxo de **três tarefas** (`Lambda` $\rightarrow$ `Glue Processing` $\rightarrow$ `Glue Reporting`) seja concluído com sucesso.
 
 -----
 
@@ -99,16 +148,11 @@ Após a conclusão do Job de Reporting, os relatórios agregados estão disponí
 
 ## 3\. 🔍 Fase 3: Análise e Consumo Final de Dados
 
-O consumo dos relatórios pré-agregados pode ser feito de duas maneiras, ambas acessando as tabelas catalogadas via Amazon Athena.
+O consumo dos relatórios pré-agregados pode ser feito via Amazon Athena.
 
 ### 3.1. Acesso Direto via Amazon Athena (SQL)
 
-Este é o método mais rápido para validação manual no console AWS:
-
-1.  Acesse o Console do **Amazon Athena** e selecione o banco de dados `nyc_taxi_db`.
-2.  Execute a consulta na tabela de relatório, por exemplo:
-
-<!-- end list -->
+No Console do **Amazon Athena**, selecione o banco de dados `nyc_taxi_db` e execute:
 
 ```sql
 SELECT 
@@ -122,27 +166,15 @@ ORDER BY
 
 ### 3.2. Acesso Programático Local (Script PyAthena)
 
-Para integrar a análise em um ambiente Python local (como o script `analytics_job.py`):
-
-#### A. Instalação de Dependências Locais
-
-É necessário instalar as bibliotecas que farão a comunicação com o Athena e processarão o resultado em um DataFrame.
+Instale as dependências locais e execute o script `analysis/analytics_job.py`:
 
 ```bash
 # Instala o driver do Athena e o Pandas
-pip install pyathena[pandas]
-```
+pip3 install pyathena[pandas]
 
-#### B. Execução do Script
-
-Certifique-se de que o **`analytics_job.py`** esteja configurado com o nome do seu bucket S3 e que suas credenciais AWS estejam ativas na máquina.
-
-```bash
 # O script irá consultar o Athena e imprimir os resultados
 python analysis/analytics_job.py
 ```
-
-O sucesso dessas consultas confirma que todo o pipeline ELT está operacional e que os relatórios de negócio estão prontos para o consumo.
 
 -----
 
