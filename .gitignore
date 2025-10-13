@@ -8,6 +8,15 @@ venv/
 .python-version
 *.log
 
+----------------------------------------------------------------------
+Exclusões de Deployment e Artefatos
+----------------------------------------------------------------------
+A pasta de deployment da Lambda é gerada pelo Makefile e não deve ser versionada.
+lambda_deployment_package/
+
+Arquivos ZIP temporários criados pelo Terraform
+tmp/
+
 # -----------------------------------------------------------------------------
 # Ignorar arquivos/diretórios gerados pelo Terraform
 # -----------------------------------------------------------------------------
