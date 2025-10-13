@@ -24,8 +24,8 @@ except Exception:
     S3_BUCKET_NAME = "nyc-taxi-data-lake-jha-case-ifood"
     
 # Caminhos das Duas Tabelas Delta na Camada Consumer
-YELLOW_PATH = f"s3a://{S3_BUCKET_NAME}/consumer/trips_delta/yellow/"
-GREEN_PATH = f"s3a://{S3_BUCKET_NAME}/consumer/trips_delta/green/"
+YELLOW_PATH = f"s3a://{S3_BUCKET_NAME}/consumer/trips_delta/trip_type=yellow/"
+GREEN_PATH = f"s3a://{S3_BUCKET_NAME}/consumer/trips_delta/trip_type=green/"
 
 # Caminhos de Escrita para a Camada Reporting (definidos nos arquivos reporting_tables.tf)
 REPORTING_Q1_PATH = f"s3a://{S3_BUCKET_NAME}/analytics/reporting/q1_avg_total_amount_monthly/"

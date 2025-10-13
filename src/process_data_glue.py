@@ -108,14 +108,15 @@ if __name__ == '__main__':
 
     # 6. Escrita em Delta Lake (Sink)
     print(f"Iniciando escrita da camada Consumer (Delta Lake) em: {CONSUMER_PATH}")
-    
-    # CRÍTICO: Adiciona overwriteSchema=true para permitir que o Delta Lake 
-    # atualize o schema com as novas colunas (tpep_*, lpep_*) e evite o erro de schema mismatch
+
+    # NOVO: Incluindo 'trip_type' como a primeira chave de partição
+    # Isso garantirá a estrutura: /trips_delta/trip_type=yellow/trip_year=2023/...
+    # E também: /trips_delta/trip_type=green/trip_year=2023/...
     df_consumer.write.mode("overwrite") \
-              .format("delta") \
-              .option("overwriteSchema", "true") \
-              .partitionBy("trip_year", "trip_month") \
-              .save(CONSUMER_PATH)
+            .format("delta") \
+            .option("overwriteSchema", "true") \
+            .partitionBy("trip_type", "trip_year", "trip_month") \
+            .save(CONSUMER_PATH)
 
     print("Escrita em Delta Lake concluída.")
     job.commit()

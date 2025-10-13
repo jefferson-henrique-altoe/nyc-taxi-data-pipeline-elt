@@ -253,7 +253,7 @@ resource "aws_glue_job" "data_processing_job" {
   max_retries     = 0
 
   execution_property {
-    max_concurrent_runs = 2 # Defina aqui o número de execuções concorrentes desejadas
+    max_concurrent_runs = 5 # Defina aqui o número de execuções concorrentes desejadas
   }
 
   tags = {
@@ -483,12 +483,13 @@ locals {
           "Next": "FailState"
         }
       ],
-      "Next": "ProcessYellow",
+      "Next": "Process Yellow Data",
       "Parameters": {
         "FunctionName": "arn:aws:lambda:us-east-2:093399695454:function:nyc-taxi-ingest-function",
         "Payload.$": "$"
       },
       "Resource": "arn:aws:states:::lambda:invoke",
+      "ResultPath": "$.lambdaResult",
       "Retry": [
         {
           "BackoffRate": 1,
@@ -501,21 +502,18 @@ locals {
           "MaxAttempts": 0
         }
       ],
-      "Type": "Task",
-      "ResultPath": "$.lambdaResult"
+      "Type": "Task"
     },
-    "ProcessYellow": {
+    "Process Yellow Data": {
       "Type": "Task",
-      "Next": "ProcessGreen",
       "Resource": "arn:aws:states:::glue:startJobRun.sync",
       "Parameters": {
         "JobName": "nyc_taxi_processing_job",
         "Arguments": {
-          "--datalake_bucket.$": "$.datalakeBucket",
+          "--datalake_bucket.$": "$$.Execution.Input.datalakeBucket",
           "--trip_type_filter": "yellow"
         }
       },
-      "ResultPath": "$.yellowJobOutput",
       "Catch": [
         {
           "ErrorEquals": [
@@ -524,20 +522,19 @@ locals {
           ],
           "Next": "FailState"
         }
-      ]
+      ],
+      "Next": "Process Green Data"
     },
-    "ProcessGreen": {
+    "Process Green Data": {
       "Type": "Task",
-      "Next": "RunAnalyticsQueries",
       "Resource": "arn:aws:states:::glue:startJobRun.sync",
       "Parameters": {
         "JobName": "nyc_taxi_processing_job",
         "Arguments": {
-          "--datalake_bucket.$": "$.datalakeBucket",
+          "--datalake_bucket.$": "$$.Execution.Input.datalakeBucket",
           "--trip_type_filter": "green"
         }
       },
-      "ResultPath": "$.greenJobOutput",
       "Catch": [
         {
           "ErrorEquals": [
@@ -546,7 +543,8 @@ locals {
           ],
           "Next": "FailState"
         }
-      ]
+      ],
+      "Next": "RunAnalyticsQueries"
     },
     "RunAnalyticsQueries": {
       "Catch": [
@@ -560,10 +558,10 @@ locals {
       ],
       "End": true,
       "Parameters": {
-        "JobName": "nyc_taxi_reporting_etl_job",
         "Arguments": {
-          "--datalake_bucket.$": "$.datalakeBucket"
-        }
+          "--datalake_bucket.$": "$$.Execution.Input.datalakeBucket"
+        },
+        "JobName": "nyc_taxi_reporting_etl_job"
       },
       "Resource": "arn:aws:states:::glue:startJobRun.sync",
       "Type": "Task"
