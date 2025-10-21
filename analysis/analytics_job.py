@@ -43,12 +43,11 @@ def run_analysis():
         QUERY_Q2 = f"""
         SELECT 
             report_hour, 
-            trip_type,
             avg_passenger_count 
         FROM 
             "{DATABASE_NAME}"."q2_hourly_passengers"
         ORDER BY 
-            report_hour, trip_type
+            report_hour
         """
         df_q2 = pd.read_sql(QUERY_Q2, conn)
         print("\n--- Relatório Q2: Média Horária de Passageiros ---")

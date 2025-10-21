@@ -63,9 +63,5 @@ resource "aws_glue_catalog_table" "q2_hourly_passengers_table" {
       name = "avg_passenger_count" # O resultado da sua agregação
       type = "double"
     }
-    columns { # CRÍTICO: Coluna de tipo de táxi adicionada para o Athena
-      name = "trip_type" 
-      type = "string"
-    }
   }
 }

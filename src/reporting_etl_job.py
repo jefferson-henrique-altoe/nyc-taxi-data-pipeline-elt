@@ -38,11 +38,10 @@ Q1_SCHEMA = StructType([
     StructField("avg_total_amount", DoubleType(), True)
 ])
 
+# ALTERADO: O schema Q2 agora contém apenas a hora e a média (frota consolidada)
 Q2_SCHEMA = StructType([
-    # CORRIGIDO: Deve ser IntegerType para compatibilidade com o Glue Catalog/Athena
     StructField("report_hour", IntegerType(), True), 
-    StructField("avg_passenger_count", DoubleType(), True),
-    StructField("trip_type", StringType(), True)
+    StructField("avg_passenger_count", DoubleType(), True)
 ])
 
 
@@ -108,7 +107,7 @@ def analyze_q1(df_yellow):
 
 def analyze_q2(df_yellow, df_green):
     """
-    Relatório Q2: Média de passageiros por hora do dia, filtrado por Maio.
+    Relatório Q2: Média de passageiros por hora do dia, filtrado por Maio. (Frota Consolidada)
     """
     # 1. Checagem inicial de dados
     if df_yellow is None and df_green is None:
@@ -128,7 +127,7 @@ def analyze_q2(df_yellow, df_green):
     else:
         df_all = df_yellow.unionByName(df_green, allowMissingColumns=True)
         
-    # 3. Filtragem e Feature Engineering: Filtra por Maio (Mês 5) e extrai a hora
+    # 3. Filtragem e Feature Engineering: Filtra por Maio (Mês 5)
     df_q2 = df_all.filter(F.col("trip_month") == 5)  # Filtra por Maio
     
     # Checagem se há dados em Maio
@@ -137,13 +136,22 @@ def analyze_q2(df_yellow, df_green):
         write_empty_report(REPORTING_Q2_PATH, Q2_SCHEMA)
         return None
 
-    # CORREÇÃO CRÍTICA: Extrai a hora como INTEGER (0-23), garantindo que o tipo Parquet seja INT
-    df_q2 = df_q2.withColumn("report_hour", F.hour(F.col("pickup_datetime")))
+    # Re-cria a coluna de pickup datetime unificada APENAS para análise.
+    df_q2 = df_q2.withColumn(
+        "pickup_time_for_analysis", 
+        F.coalesce(F.col("tpep_pickup_datetime"), F.col("lpep_pickup_datetime"))
+    )
+    
+    # Garante que a data de pickup não seja nula após a unificação (DQ implícito)
+    df_q2 = df_q2.filter(F.col("pickup_time_for_analysis").isNotNull())
+    
+    # Extrai a hora como INTEGER (0-23) usando a coluna analítica
+    df_q2 = df_q2.withColumn("report_hour", F.hour(F.col("pickup_time_for_analysis")))
 
-    # 4. Agregação
-    df_q2 = df_q2.groupBy(F.col("report_hour"), F.col("trip_type")) \
+    # 4. Agregação (Corrigido: Remove trip_type do agrupamento para consolidar a frota)
+    df_q2 = df_q2.groupBy(F.col("report_hour")) \
                   .agg(F.avg("passenger_count").alias("avg_passenger_count")) \
-                  .select("report_hour", F.round(F.col("avg_passenger_count"), 2).alias("avg_passenger_count"), "trip_type")
+                  .select("report_hour", F.round(F.col("avg_passenger_count"), 2).alias("avg_passenger_count")) # Remove trip_type do select
     
     # 5. Escrita
     print(f"Escrevendo Q2 em: {REPORTING_Q2_PATH}")

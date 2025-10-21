@@ -55,8 +55,11 @@ resource "aws_glue_catalog_table" "trips_consumer_table" {
 
   # Parâmetros de formato
   parameters = {
-    "classification" = "parquet"
+    # 1. PARÂMETROS PARA SUPORTE AO DELTA LAKE NO ATHENA/GLUE
+    "classification" = "parquet" # Mantido como 'parquet' por questões de compatibilidade do Glue
     "parquet.compression" = "SNAPPY"
+    "storage.handler" = "io.delta.hive.DeltaStorageHandler" # CRÍTICO: Indica que é uma tabela Delta
+    "delta.table.name" = "trips_consumer"
   }
 
   storage_descriptor {
@@ -69,9 +72,9 @@ resource "aws_glue_catalog_table" "trips_consumer_table" {
       serialization_library = "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
     }
 
-    # Definição das colunas OBRIGATÓRIAS (e seus tipos de dados)
+    # 2. COLUNAS DO SCHEMA UNIFICADO (CAMPOS NÃO-PARTICIONADOS)
     columns {
-      name = "vendorid"
+      name = "vendor_id"             # CORRIGIDO para snake_case conforme script PySpark
       type = "bigint"
     }
     columns {
@@ -90,7 +93,29 @@ resource "aws_glue_catalog_table" "trips_consumer_table" {
       name = "tpep_dropoff_datetime"
       type = "timestamp"
     }
-    # Adicionar outras colunas se forem transformadas/mantidas
+    # === ADIÇÕES CRUCIAIS ===
+    columns {
+      name = "lpep_pickup_datetime"  # Coluna Original do Green Taxi
+      type = "timestamp"
+    }
+    columns {
+      name = "lpep_dropoff_datetime" # Coluna Original do Green Taxi
+      type = "timestamp"
+    }
+  }
+
+  # 3. CHAVES DE PARTIÇÃO (DEFINIDAS NO PARTITION BY DO PYSPARK)
+  partition_keys {
+    name = "trip_type"
+    type = "string"
+  }
+  partition_keys {
+    name = "trip_year"
+    type = "int"
+  }
+  partition_keys {
+    name = "trip_month"
+    type = "int"
   }
 }
 
@@ -152,7 +177,8 @@ resource "aws_iam_policy" "glue_execution_policy" {
           "glue:CreatePartition",
           "glue:BatchCreatePartition",
           "glue:UpdatePartition",
-          "glue:DeletePartition"
+          "glue:DeletePartition",
+          "athena:StartQueryExecution"
         ],
         Effect   = "Allow",
         Resource = "*" # Para o catálogo, geralmente usamos '*'
